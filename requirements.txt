@@ -1,0 +1,17 @@
+bcrypt==4.0.0
+boto3==1.24.64
+botocore==1.27.64
+cffi==1.15.1
+cryptography==37.0.4
+jmespath==1.0.1
+paramiko==2.11.0
+pycparser==2.21
+pyjnius==1.4.2
+PyNaCl==1.5.0
+pysftp==0.2.9
+python-dateutil==2.8.2
+python-dotenv==0.20.0
+s3transfer==0.6.0
+schedule==1.1.0
+six==1.16.0
+urllib3==1.26.12
