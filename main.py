@@ -35,6 +35,7 @@ import jnius_config
 jnius_config.set_classpath('./java/masked-id-util.jar','./java/trimplement-wallet-server-common.jar')
 import jnius
 from jnius import autoclass
+from datetime import datetime
 
 
 print(os.getenv("ZENITH_ENV"))
@@ -77,45 +78,61 @@ def start():
         s3 = boto3.resource(
             's3'
         )
+        print(os.getenv('S3_BUCKET'))
         bucket=s3.Bucket(os.getenv('S3_BUCKET'));
         for obj in bucket.objects.all():
             try:
+                if not obj.key.startswith("NG/2022/"+datetime.now().strftime('%m')):
+                    continue
                 if not obj.key.endswith(".csv"):
+                    continue
+                if not obj.key.endswith("settlement-2022-09-20.csv"):
                     continue
                 logging.info("Processing file "+obj.key)
                     
-                outputFileName=obj.key+".zenith.txt"
+                fileName=obj.key[obj.key.rfind("/")+1:]
+                path=obj.key[:obj.key.rfind("/")+1]
+                outputFileName=fileName+".zenith.txt"
+                print(fileName)
+                print(path)
+                path="NG/"
+                print(outputFileName)
                 try:
-                    s3.Object(bucket.name, 'zenith/'+outputFileName).load()
+                    s3.Object(bucket.name, path+'Zenith/'+outputFileName).load()
                 except botocore.exceptions.ClientError as e:
                     if e.response['Error']['Code'] == "404":
                         logging.info("File "+obj.key+ " doesn't exists")
-                        bucket.download_file( obj.key, obj.key)
+                        bucket.download_file( obj.key,fileName )
+                        NGNPay,NGNCom,USDPay,USDCom,cnt=writeSettlementFile(fileName,outputFileName,os.getenv('AGG_ID'))
                         
-                        NGNPay,NGNCom,USDPay,USDCom=writeSettlementFile(obj.key,outputFileName,os.getenv('AGG_ID'))
+                        os.remove(fileName)
                         
-                        os.remove(obj.key)
-                        transferSettlementFile(outputFileName);
-                        
-                        bucket.upload_file(outputFileName,'zenith/'+outputFileName)
-                        os.remove(outputFileName)
-                        sendSuccessEmail(obj.key,outputFileName,NGNPay,NGNCom,USDPay,USDCom)
+                        if cnt==0:
+                            sendWarningEmail(obj.key,outputFileName,NGNPay,NGNCom,USDPay,USDCom)
+                        else:
+                            transferSettlementFile(outputFileName);
+                            bucket.upload_file(outputFileName,path+'Zenith/'+outputFileName)
+                            os.remove(outputFileName)
+                            sendSuccessEmail(obj.key,outputFileName,NGNPay,NGNCom,USDPay,USDCom)
                     else:
                         logging.error("Error checking if file  exists")
-                        
                         raise
                 else:
                     logging.info("File "+ outputFileName+ " already integrated ")# Th
             except Exception as e:
                 sendErrorMail(obj.key,e) 
+            #return
     except Exception as e:
         sendErrorMail(None,e) 
+    print("End")
 
 
 def sendEmail(RECIPIENT,SUBJECT,BODY_TEXT,BODY_HTML):
     SENDER = "Nuno Ribeiro <nuno.ribeiro@jumia.com>"
     CHARSET = "UTF-8"
-    client = boto3.client('ses')
+    client = boto3.client('ses',region_name=os.getenv("EMAIL_AWS_DEFAULT_REGION"),
+aws_access_key_id=os.getenv("EMAIL_AWS_ACCESS_KEY_ID"),
+aws_secret_access_key=os.getenv("EMAIL_AWS_SECRET_ACCESS_KEY"))
     try:
         response = client.send_email(
             Destination={
@@ -148,7 +165,8 @@ def sendEmail(RECIPIENT,SUBJECT,BODY_TEXT,BODY_HTML):
         logging.info("Email sent! Message ID:"+response['MessageId'])
 
 def sendErrorMail(file,exception):
-    
+    logging.info("Sending error mail "+str(exception))
+
     if (file is None):
         res=""
     else:
@@ -173,6 +191,7 @@ def sendErrorMail(file,exception):
 
      #s3.download_file('BUCKET_NAME', 'OBJECT_NAME', 'FILE_NAME')
 def sendSuccessEmail(file,convertedFile,NGNPay,NGNCom,USDPay,USDCom) :
+    logging.info("Sending sucess mail ")
     RECIPIENT = os.getenv("EMAIL_RECIPIENT")
     SUBJECT = "Zenith Integration"
     BODY_TEXT = ("File "+file+ " was converted and integrated on ZenithBank with the name "+convertedFile+"\n"+
@@ -194,7 +213,24 @@ def sendSuccessEmail(file,convertedFile,NGNPay,NGNCom,USDPay,USDCom) :
             """            
     CHARSET = "UTF-8"
     sendEmail(RECIPIENT,SUBJECT,BODY_TEXT,BODY_HTML)
-   
+
+
+def sendWarningEmail(file,convertedFile,NGNPay,NGNCom,USDPay,USDCom) :
+    logging.info("Sending warning mail ")
+    RECIPIENT = os.getenv("EMAIL_RECIPIENT")
+    SUBJECT = "Zenith Integration - Warning"
+    BODY_TEXT = ("File "+file+ " was converted with 0 rows")
+    BODY_HTML = """<html>
+        <head></head>
+        <body>
+        <h1>Zenith Integration</h1>
+        <p>File """+file+ """ was converted with 0 rows</p>
+        </body>
+        </html>
+            """            
+    CHARSET = "UTF-8"
+    sendEmail(RECIPIENT,SUBJECT,BODY_TEXT,BODY_HTML)
+
 def transferSettlementFile(outputFileName):
     cnopts = pysftp.CnOpts()
     cnopts.hostkeys = None   
@@ -287,9 +323,7 @@ def writeSettlementFile(inputFileName, outputFileName, aggregatorid):
     
         with open(inputFileName, newline='') as csvfile:
             jpay = csv.DictReader(csvfile, delimiter=',', quotechar='\"')
-
             for row in jpay:
-            
                 cnt=cnt+1
             
                 for dict in jpayDict:
@@ -350,6 +384,8 @@ def writeSettlementFile(inputFileName, outputFileName, aggregatorid):
         output.append(tmp)
 
         logging.info('Finished reading file with '+str(cnt)+' lines')
+        if cnt==0:
+           return NGNPay/100,NGNCom/100,USDPay/100,USDCom/100,cnt 
     except Exception as e:
         exc_tb = sys.exc_info()
         handleException("Exception "+str(e.__class__)+" when processing file "+inputFileName+" in line "+str(cnt),e)
@@ -366,7 +402,7 @@ def writeSettlementFile(inputFileName, outputFileName, aggregatorid):
     except Exception as e:
         exc_tb = sys.exc_info()
         handleException("Exception "+str(e.__class__)+"  when processing file "+inputFileName+" in line "+str(cnt),e)
-    return NGNPay/100,NGNCom/100,USDPay/100,USDCom/100
+    return NGNPay/100,NGNCom/100,USDPay/100,USDCom/100,cnt
     
 if __name__ == '__main__':
     sys.exit(main())
